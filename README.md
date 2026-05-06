@@ -1,4 +1,9 @@
-# LINFO2347 — project2
+# LINFO2347 — project2 
+
+**INGINOUS GROUP: 121
+Oussema EBN ATTOU 16582510
+Mohamed Mehdi ABDI 09812510**
+
 
 This project builds a small enterprise network in Mininet (two subnets: a DMZ and a workstation LAN, connected via a router to a simulated internet host). It demonstrates 5 attack/defense pairs: network scan, FTP brute force, ARP poisoning, botnet HTTP flood, and reflected UDP DDoS.
 
