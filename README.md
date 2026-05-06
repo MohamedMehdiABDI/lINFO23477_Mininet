@@ -1,359 +1,286 @@
-# LINFO2347 - Network Attacks Project
+# LINFO2347 — project2
 
-## Group Members
-- Student 1: [Your Name]
-- Student 2: [Partner Name]
+This project builds a small enterprise network in Mininet (two subnets: a DMZ and a workstation LAN, connected via a router to a simulated internet host). It demonstrates 5 attack/defense pairs: network scan, FTP brute force, ARP poisoning, botnet HTTP flood, and reflected UDP DDoS.
 
-## Overview
-This project implements a secure enterprise network topology using mininet, with basic firewall protection and 4 network attacks with their corresponding protections.
+## Start the topology
 
----
+Run on the VM host (from this directory):
 
-## Network Topology
-
-The topology mimics a typical enterprise network with three zones:
-
-```
-Let's do this systematically. First let me sync all files to the project folder, then create the README, then the PPT.
-Step 1 — Sync all files on Terminal 2:
-bashcp ~/LINFO2347/attacks/* ~/project/attacks/
-cp ~/LINFO2347/protections/* ~/project/protections/
-cp ~/LINFO2347/firewall.sh ~/project/
-Step 2 — Create the README:
-bashnano ~/project/README.md
-Paste this:
-markdown# LINFO2347 - Network Attacks Project
-
-## Group Members
-- Student 1: [Your Name]
-- Student 2: [Partner Name]
-
-## Overview
-This project implements a secure enterprise network topology using mininet, with basic firewall protection and 4 network attacks with their corresponding protections.
-
----
-
-## Network Topology
-
-The topology mimics a typical enterprise network with three zones:
-
-```
-internet -- r2 -- s2 -- DMZ servers (10.12.0.x)
-                   |
-                  r1 -- s1 -- workstations (10.1.0.x)
-```
-
-### Hosts
-| Host | IP | Service |
-|------|----|---------|
-| ws2 | 10.1.0.2 | Workstation |
-| ws3 | 10.1.0.3 | Workstation |
-| http | 10.12.0.10 | Apache2 HTTP (port 80) |
-| dns | 10.12.0.20 | dnsmasq DNS (port 5353) |
-| ntp | 10.12.0.30 | OpenNTPD NTP (port 123) |
-| ftp | 10.12.0.40 | vsftpd FTP (port 21) |
-| internet | 10.2.0.2 | External host |
-| r1 | 10.1.0.1 / 10.12.0.1 | Internal router |
-| r2 | 10.2.0.1 / 10.12.0.2 | Gateway router |
-
----
-
-## How to Run
-
-### 1. Start the topology
 ```bash
+cd /project2UCL/lINFO23477_Mininet
 sudo mn -c
-sudo -E python3 ~/LINFO2347/topo.py 16582510
+sudo -E python3 topo.py YOURNOMA   
 ```
 
-### 2. Apply basic enterprise firewall
+This opens the Mininet CLI.
+- Run **attacks** from the Mininet CLI (prefix with the host name, e.g. `internet ...`, `ws3 ...`).
+- Run **defenses** from the VM host in a separate terminal (scripts use `mnexec` + `pgrep`).
+
+Tip: scapy-based attacks usually require root. If you get permission errors, run `sudo python3 ...` inside the Mininet host.
+
+---
+
+## 1) Apply the initial enterprise firewall
+
+`firewall.sh` is the **basic enterprise network protection** and must be applied first.
+
+Policy enforced:
+- Workstations (ws2, ws3) can initiate connections (incl. ping) to any host.
+- DMZ servers (http, dns, ntp, ftp) cannot initiate new outbound connections (only reply).
+- Internet can only initiate connections toward DMZ (not toward workstations).
+
+Apply it (VM host, while topology is running):
+
 ```bash
-sudo bash ~/LINFO2347/firewall.sh
+sudo bash firewall.sh
 ```
 
-### 3. Start Apache on http server
+**Verify the firewall policy (Mininet CLI):**
+
 ```bash
-sudo mnexec -a $(pgrep -f "mininet:http") bash -c 'pkill -9 apache2; sleep 1; apache2ctl -D FOREGROUND &'
+# Internet cannot reach workstations — should fail/timeout
+internet ping -c 2 10.1.0.10
+
+# Workstations can still reach DMZ — should succeed
+ws2 ping -c 2 10.12.0.10
+ws2 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
+```
+
+```bash
+# Inspect r2 forward rules (VM host)
+sudo bash -c "mnexec -a $(pgrep -f 'mininet:r2') nft list ruleset"
+```
+
+
+
+---
+
+## 2) 5 Attack/Defense pairs
+
+
+### Network scan
+
+**Attack:** discover live hosts and open ports. The script probes both subnets (DMZ `10.12.0.0/24` and workstation `10.1.0.0/24`) using ICMP echo-requests to find hosts that respond, and TCP SYN packets to common ports (FTP/SSH/HTTP/DNS) to infer open services (SYN-ACK means open).
+
+**Execute (Mininet CLI):**
+```bash
+internet python3 attacks/network_scan.py
+```
+
+**Expected output:** The script prints each host that replied to ICMP and each port that returned a SYN-ACK, revealing the live DMZ hosts and their open services.
+
+---
+
+**Defense:** reduce scan visibility at the perimeter router. On `r2`, we rate-limit ICMP echo-requests arriving from the internet side and drop TCP SYN packets targeting non-public ports, so scanners cannot easily map the DMZ and cannot probe internal services.
+
+**Execute (VM host):**
+```bash
+sudo bash protections/protect_scan.sh
+```
+
+**Verify (Mininet CLI + VM host):**
+```bash
+# Re-run scan — ICMP is rate-limited and non-public SYNs are blocked
+internet python3 attacks/network_scan.py
+
+# Confirm r2 forward rules (VM host)
+sudo bash -c "mnexec -a $(pgrep -f 'mininet:r2') nft list ruleset"
+```
+
+> Expected: significantly fewer host replies (ICMP rate-capped at 3/s), and port probes to anything other than 80 and 21 get no response.
+
+---
+
+### FTP brute force
+
+**Attack:** try many username/password combinations against the FTP server (`10.12.0.40:21`). The script repeatedly opens TCP connections and sends `USER`/`PASS` commands; if the server returns code `230`, the login succeeded.
+
+**Execute (Mininet CLI):**
+```bash
+internet python3 attacks/ftp_bruteforce.py
+```
+
+**Expected output:** Rapid connection attempts printed one per line; a `230 Login successful` line appears if a correct credential is found.
+
+---
+
+**Defense:** slow brute force using connection rate limiting on the FTP server. We accept only a small number of new connections per minute per source IP (using nftables `meter`), then drop additional new attempts. This keeps normal FTP usage working while making password guessing impractically slow.
+
+**Execute (VM host):**
+```bash
+sudo bash protections/protect_ftp_bruteforce.sh
+```
+
+**Verify (Mininet CLI + VM host):**
+```bash
+# Re-run brute force — first 3 attempts connect, then new connections are dropped
+internet python3 attacks/ftp_bruteforce.py
+
+# Inspect ftp server input rules (VM host)
+sudo bash -c "mnexec -a $(pgrep -f 'mininet:ftp') nft list ruleset"
+```
+
+> Expected: the first 3 connection attempts from the same IP succeed; all subsequent attempts within the same minute are silently dropped.
+
+---
+
+### ARP cache poisoning
+
+**Attack:** poison the victim's ARP cache on the local LAN. The attacker (ws3) sends forged ARP replies to the victim (ws2) claiming that the gateway IP (`10.1.0.1`) is bound to the attacker's MAC address. This can enable traffic redirection / MITM on a flat LAN.
+
+**Execute (Mininet CLI — check cache before, then run attack):**
+```bash
+# Check ws2's ARP cache before the attack — gateway IP maps to the real router MAC
+ws2 arp -n
+
+# Run the attack from ws3
+ws3 python3 attacks/arp_poison.py
+
+# Check ws2's ARP cache again — gateway IP now maps to ws3's MAC
+ws2 arp -n
+```
+
+**Expected output:** After the attack, `ws2 arp -n` shows the gateway IP (`10.1.0.1`) pointing to ws3's MAC instead of the router's MAC.
+
+---
+
+**Defense:** prevent gateway spoofing by filtering ARP at the workstation. We drop ARP replies that claim to be from the gateway IP unless the sender MAC matches the legitimate gateway MAC (MAC pinning). This blocks the poisoning packets without breaking normal ARP.
+
+**Execute (VM host):**
+```bash
+sudo bash protections/protect_arp_poison.sh
+```
+
+**Verify (Mininet CLI):**
+```bash
+# Flush ws2's ARP cache and re-run the attack
+ws2 ip neigh flush all
+ws3 python3 attacks/arp_poison.py
+
+# Gateway MAC on ws2 should still be the real router MAC
+ws2 arp -n
+```
+
+> Expected: `ws2 arp -n` continues to show the legitimate gateway MAC — forged ARP replies are silently dropped.
+
+---
+
+### Reflected DDoS (UDP amplification)
+
+**Attack:** reflected/amplified flooding via source-IP spoofing. The attacker spoofs the victim IP and sends small UDP requests to a reflector; the reflector answers with much larger UDP replies to the victim, amplifying the traffic that hits the victim.
+
+**Execute (prep, Mininet CLI — start reflector on ntp):**
+```bash
+ntp python3 attacks/udp_reflector.py &
+```
+
+**Execute (Mininet CLI):**
+```bash
+internet python3 attacks/reflected_ddos.py
+```
+
+**Expected output:** The HTTP server (`10.12.0.10`) is flooded with UDP packets sourced from the reflector on port 12345. The `reflected_ddos.py` script prints the number of amplified packets sent.
+
+---
+
+**Defense:** block the amplification traffic at the victim. On the HTTP server, we drop the unsolicited UDP replies coming from the reflector port used by this demo (`12345`) so the amplified traffic does not reach the application.
+
+**Execute (VM host):**
+```bash
+sudo bash protections/protect_reflected_ddos.sh
+```
+
+**Verify (Mininet CLI + VM host):**
+```bash
+# Re-run the attack
+ntp python3 attacks/udp_reflector.py &
+internet python3 attacks/reflected_ddos.py
+
+# Drop counter on http server — the packets field should be incrementing (VM host)
+sudo bash -c "mnexec -a $(pgrep -f 'mininet:http') nft list ruleset"
+
+# HTTP service is still reachable despite the flood
+ws2 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
+```
+
+> Expected: the nftables counter shows UDP packets being dropped; the HTTP service still returns `HTTP 200`.
+
+---
+
+### Botnet HTTP flood (C&C + bots)
+
+**Attack:** distributed application-layer DoS using multiple compromised hosts (bots). A C&C server runs on the internet host and waits for bots to connect. Once enough bots are connected, it commands them to repeatedly connect to the HTTP server (`10.12.0.10:80`) and send HTTP requests, increasing load with traffic from multiple sources.
+
+**Execute (Mininet CLI):**
+
+1. Start the bots on the workstation hosts (bots will keep looking for C&C every 2 seconds):
+```bash
+ws2 python3 attacks/bot.py &
+ws3 python3 attacks/bot.py &
+```
+
+2. Start the C&C server (waits 10 s for bots to connect, then sends the ATTACK command):
+```bash
+internet python3 attacks/botnet_cnc.py &
+```
+
+**Expected output:** After ~10 s the C&C sends the flood command; the HTTP server starts receiving a high volume of connections from both ws2 and ws3.
+
+Verify the attack is running:
+```bash
+ws2 jobs
+ws3 jobs
+internet jobs
+```
+
+Useful cleanup commands:
+```bash
+ws2 pkill -f bot.py
+ws3 pkill -f bot.py
+internet pkill -f botnet_cnc.py
 ```
 
 ---
 
-## Basic Enterprise Network Protection
+**Defense:** rate-limit abusive clients at the DMZ servers. The defense installs nftables rules on DMZ servers to reject excessive new connections per source IP (HTTP/FTP/DNS/NTP service ports). This preserves normal traffic while throttling floods.
 
-### Policy
-The basic firewall implements the following security policies:
-
-| Zone | Policy |
-|------|--------|
-| Workstations | Can ping and initiate connections to anyone |
-| DMZ Servers | Cannot initiate connections, can only respond |
-| Internet | Can only reach DMZ servers, cannot reach workstations |
-
-### Implementation
-Rules are applied using nftables on:
-- **Each DMZ server** (http, dns, ntp, ftp): output chain with `policy drop`, only allowing `established,related` traffic
-- **r2**: forward chain blocking new connections and pings from internet to workstation subnet `10.1.0.0/24`
-
-### Verification
+**Execute (VM host):**
 ```bash
-# Should FAIL - DMZ cannot initiate
-mininet> http ping ws2 -c 2
-
-# Should FAIL - internet cannot reach workstations  
-mininet> internet ping ws2 -c 2
-
-# Should WORK - internet can reach DMZ
-mininet> internet ping http -c 2
-
-# Should WORK - workstations can reach anyone
-mininet> ws2 ping http -c 2
+sudo bash protections/protect_botnet.sh
 ```
+
+**Verify (Mininet CLI + VM host):**
+```bash
+# Bots will start seeing most requests rejected 
+ws2 jobs
+ws3 jobs
+```
+
+> Expected: `ws2 curl` returns `HTTP 200`; bots see an increasing number of rejected connections while legitimate single requests succeed.
 
 ---
 
-## Attack 1 — Network Scan
+## 3) End-to-end verification — normal operations after all protections
 
-### Script
-`attacks/network_scan.py`
+With all protections applied, confirm that legitimate traffic still flows correctly:
 
-### How to run
+**From the Mininet CLI:**
 ```bash
-# Without protection
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/network_scan.py
+# All DMZ services reachable from workstations
+ws2 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
+ws2 ping -c 2 10.12.0.10    # HTTP server
+ws2 ping -c 2 10.12.0.20    # DNS server
+ws2 ping -c 2 10.12.0.30    # NTP server
+ws2 ping -c 2 10.12.0.40    # FTP server
 
-# Apply protection
-sudo bash ~/LINFO2347/protections/protect_scan.sh
+# Workstations can reach the internet
+ws2 ping -c 2 10.2.0.1
 
-# With protection
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/network_scan.py
+# Internet can still reach DMZ public services (HTTP on port 80)
+internet curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
+
+# Internet cannot reach workstations — should fail/timeout
+internet ping -c 2 10.1.0.10
 ```
 
-### Attack Logic
-The attacker runs from the `internet` host and performs two types of scans:
-
-1. **ICMP Scan**: Sends ICMP echo requests to every IP in the subnet to discover which hosts are alive
-2. **TCP SYN Scan**: Sends TCP SYN packets to common ports (21, 22, 80, 5353) on each host. If the host replies with SYN-ACK the port is open, if it replies with RST the port is closed, if there is no reply the port is filtered
-
-**Before protection**, the scan reveals:
-- `10.12.0.10:22` OPEN (SSH on http server)
-- `10.12.0.20:5353` OPEN (DNS)
-- `10.12.0.30:22` OPEN (SSH on ntp server)
-- `10.12.0.40:21` OPEN (FTP)
-- `10.12.0.40:22` OPEN (SSH on ftp server)
-
-This gives the attacker a complete map of the network and its services.
-
-### Protection Logic
-`protections/protect_scan.sh` — applied on **r2**
-
-Two nftables rules:
-
-**Rule 1 — Rate limit ICMP:**
-```
-iifname "r2-eth0" icmp type echo-request limit rate over 3/second drop
-```
-A legitimate user sends at most 1-2 pings per second. A scanner sends dozens per second — this throttles the scan significantly.
-
-**Rule 2 — Block TCP SYN to sensitive ports:**
-```
-iifname "r2-eth0" ip protocol tcp tcp flags syn tcp dport != { 80, 21 } drop
-```
-Only ports 80 (HTTP) and 21 (FTP) are publicly accessible services. All other ports (SSH, DNS) are hidden from the internet.
-
-**After protection**, the scan only reveals:
-- `10.12.0.10:80` OPEN (HTTP — intentionally public)
-- `10.12.0.40:21` OPEN (FTP — intentionally public)
-
-SSH and DNS are completely hidden, reducing the attack surface significantly.
-
----
-
-## Attack 2 — FTP Brute Force
-
-### Script
-`attacks/ftp_bruteforce.py`
-
-### How to run
-```bash
-# Without protection
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/ftp_bruteforce.py
-
-# Apply protection
-sudo bash ~/LINFO2347/protections/protect_ftp_bruteforce.sh
-
-# With protection
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/ftp_bruteforce.py
-```
-
-### Attack Logic
-The attacker runs from the `internet` host and tries all combinations of usernames and passwords against the FTP server on port 21.
-
-Each attempt opens a **new TCP connection**:
-1. TCP SYN → connect to port 21
-2. Send `USER username`
-3. Send `PASS password`
-4. Check response: `230` = success, `530` = failure
-5. Close connection and try next combination
-
-Without protection, the attack successfully finds `mininet:mininet` credentials.
-
-### Protection Logic
-`protections/protect_ftp_bruteforce.sh` — applied on **ftp server**
-
-Uses an nftables **meter** to track new connections per source IP:
-
-```
-tcp dport 21 ct state new meter ftp_limit 
-{ ip saddr limit rate 3/minute burst 3 packets } accept
-tcp dport 21 ct state new drop
-```
-
-The meter allows maximum 3 new TCP connections per minute per source IP. After 3 attempts the attacker must wait 1 minute before trying again.
-
-**The math:**
-- Our wordlist: 35 combinations
-- Without protection: found in ~17 seconds
-- With protection: 3 attempts/minute = 11 minutes for 35 passwords
-- Real wordlist (100,000 passwords): ~23 days
-
-The rule applies to **any** source IP exceeding the rate — not a specific attacker IP, satisfying the assignment requirement.
-
----
-
-## Attack 3 — ARP Cache Poisoning
-
-### Script
-`attacks/arp_poison.py`
-
-### How to run
-```bash
-# Check ws2 ARP cache before attack
-sudo mnexec -a $(pgrep -f "mininet:ws2") arp -n
-
-# Without protection - run from ws3
-sudo mnexec -a $(pgrep -f "mininet:ws3") python3 ~/LINFO2347/attacks/arp_poison.py
-
-# Check ws2 ARP cache during attack
-sudo mnexec -a $(pgrep -f "mininet:ws2") arp -n
-
-# Apply protection
-sudo bash ~/LINFO2347/protections/protect_arp_poison.sh
-
-# Flush poisoned cache
-sudo mnexec -a $(pgrep -f "mininet:ws2") ip neigh flush all
-
-# Run attack again - should be blocked
-sudo mnexec -a $(pgrep -f "mininet:ws3") python3 ~/LINFO2347/attacks/arp_poison.py
-```
-
-### Attack Logic
-The attacker runs from `ws3` and poisons `ws2`'s ARP cache:
-
-1. `ws3` sends **fake ARP reply** to `ws2`: "I am the gateway `10.1.0.1`, my MAC is `ws3_MAC`"
-2. `ws2` updates its ARP cache with the fake entry
-3. All of `ws2`'s traffic destined for the gateway now goes to `ws3` instead
-4. `ws3` becomes a **Man in the Middle** — it can intercept, read, or modify all of `ws2`'s traffic
-
-**Before attack:**
-```
-10.1.0.1    ae:df:24:09:d4:7a   ← r1's real MAC
-```
-**During attack:**
-```
-10.1.0.1    d2:0f:ec:f5:e3:5d   ← ws3's MAC (POISONED!)
-```
-
-### Protection Logic
-`protections/protect_arp_poison.sh` — applied on **ws2 and ws3**
-
-Uses nftables ARP table filtering:
-
-```
-arp operation reply arp saddr ip 10.1.0.1 
-arp saddr ether != GATEWAY_MAC drop
-```
-
-This rule drops any ARP reply that claims to be the gateway (`10.1.0.1`) but comes from a MAC address that is not the real gateway MAC. Any host can still send legitimate ARP replies — only fake ones claiming to be the gateway are dropped.
-
-**After protection:**
-```
-10.1.0.1    GONE (fake ARP replies rejected)
-```
-
----
-
-## Attack 4 — Reflected DDoS (UDP Amplification)
-
-### Scripts
-- `attacks/udp_reflector.py` — simulates a vulnerable UDP server
-- `attacks/reflected_ddos.py` — the attack script
-
-### How to run
-```bash
-# Start the reflector on ntp server
-sudo mnexec -a $(pgrep -f "mininet:ntp") python3 ~/LINFO2347/attacks/udp_reflector.py &
-
-# Monitor victim BEFORE protection
-sudo mnexec -a $(pgrep -f "mininet:http") tcpdump -i http-eth0 udp port 12345 -c 10 -v
-
-# Run the attack
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/reflected_ddos.py
-
-# Apply protection
-sudo bash ~/LINFO2347/protections/protect_reflected_ddos.sh
-
-# Run attack again then check counter
-sudo mnexec -a $(pgrep -f "mininet:internet") python3 ~/LINFO2347/attacks/reflected_ddos.py
-sudo mnexec -a $(pgrep -f "mininet:http") nft list ruleset
-```
-
-### Attack Logic
-This is a **Reflected DDoS with amplification**:
-
-1. Attacker spoofs source IP as victim (`10.12.0.10`) and sends small `GET` request (3 bytes) to the reflector
-2. Reflector thinks the victim sent the request and replies with 1000 bytes
-3. Victim receives 1000 byte replies it never requested
-4. Attacker is hidden — traffic appears to come from the reflector
-
-**Amplification factor:**
-- Attacker sends: 200 × 3 bytes = **600 bytes**
-- Victim receives: 200 × 1000 bytes = **200,000 bytes**
-- **Amplification factor = 333x**
-
-In real attacks, public DNS or NTP servers are used as reflectors, making the attack extremely difficult to stop since traffic comes from legitimate servers.
-
-### Protection Logic
-`protections/protect_reflected_ddos.sh` — applied on **http server**
-
-```
-ip protocol udp udp sport 12345 counter drop
-```
-
-Drops all unsolicited UDP packets from the reflector port. Since the victim never initiated any connection to port 12345, all incoming UDP from that port is by definition unsolicited amplification traffic.
-
-**Proof of protection:**
-```
-counter packets 200 bytes 205600 drop
-```
-All 200 amplified packets (205,600 bytes) were dropped before reaching any application.
-
----
-
-## File Structure
-
-```
-LINFO2347/
-├── topo.py                          # Mininet topology
-├── firewall.sh                      # Basic enterprise protection
-├── attacks/
-│   ├── network_scan.py             # Attack 1: Network scan
-│   ├── ftp_bruteforce.py           # Attack 2: FTP brute force
-│   ├── arp_poison.py               # Attack 3: ARP cache poisoning
-│   ├── udp_reflector.py            # Attack 4: UDP reflector server
-│   └── reflected_ddos.py           # Attack 4: Reflected DDoS
-└── protections/
-    ├── protect_scan.sh             # Protection against network scan
-    ├── protect_ftp_bruteforce.sh   # Protection against FTP brute force
-    ├── protect_arp_poison.sh       # Protection against ARP poisoning
-    └── protect_reflected_ddos.sh   # Protection against reflected DDoS
-```
+> Expected: all DMZ pings and the HTTP curl return successfully; the internet→workstation ping fails — the enterprise security policy is intact and services remain operational.

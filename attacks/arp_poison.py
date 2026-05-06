@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Attack 3: ARP Cache Poisoning
 # Run from ws3 to poison ws2's ARP cache
-# Usage: python3 arp_poison.py
+
 
 from scapy.all import *
 import time

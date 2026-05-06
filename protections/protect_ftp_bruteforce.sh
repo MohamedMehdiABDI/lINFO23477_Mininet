@@ -1,8 +1,7 @@
 #!/bin/bash
 # Protection against FTP brute force
 # Uses nftables meter to limit new FTP connections to 3 per minute per source IP
-# Note: rate limiting slows down brute force attacks significantly
-# but should be combined with strong passwords in production
+
 
 echo "Applying FTP brute force protection on ftp server..."
 
@@ -22,7 +21,6 @@ mnexec -a $(pgrep -f "mininet:ftp") nft add rule inet filter input ct state esta
 
 # Allow max 3 new connections per minute per source IP
 # After 3 attempts the attacker must wait 1 minute before trying again
-# This makes brute forcing with large wordlists practically impossible
 mnexec -a $(pgrep -f "mininet:ftp") nft add rule inet filter input tcp dport 21 ct state new meter ftp_limit '{ ip saddr limit rate 3/minute burst 3 packets }' accept
 mnexec -a $(pgrep -f "mininet:ftp") nft add rule inet filter input tcp dport 21 ct state new drop
 
