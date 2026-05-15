@@ -10,8 +10,8 @@ TARGET = "10.12.0.40"
 PORT = 21
 
 # Small wordlist for demo
-USERS = ["admin", "root", "ftp", "user", "mininet"]
-PASSWORDS = ["123456", "password", "admin", "root", "mininet", "ftp", "toor"]
+USERS = ["admin", "root", "mininet"]
+PASSWORDS = ["admin", "root", "mininet"]
 
 def try_login(user, password):
     try:

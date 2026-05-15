@@ -1,38 +1,43 @@
 #!/usr/bin/env python3
 # Attack 1: Network Scan using ICMP and TCP SYN
 # Run from any host e.g: internet
-# Usage: python3 network_scan.py
 
 from scapy.all import *
 import ipaddress
 
 def icmp_scan(subnet):
     print(f"\n[*] ICMP scan on {subnet}")
-    for ip in ipaddress.IPv4Network(subnet).hosts():
-        ip = str(ip)
-        pkt = IP(dst=ip)/ICMP()
-        reply = sr1(pkt, timeout=1, verbose=0)
-        if reply:
-            print(f"  [+] {ip} is UP (ICMP)")
+    hosts = [str(ip) for ip in ipaddress.IPv4Network(subnet).hosts()]
+    # Send all pings at once to speed up the scan
+    ans, unans = sr(IP(dst=hosts)/ICMP(), timeout=2, verbose=0)
+    for sent, received in ans:
+        print(f"  [+] {received.src} is UP (ICMP)")
+    print(f"  [*] {len(ans)} hosts up, {len(unans)} not responding")
 
-def tcp_syn_scan(subnet, ports=[21, 22, 80, 5353]):
-    print(f"\n[*] TCP SYN scan on {subnet} ports {ports}")
-    for ip in ipaddress.IPv4Network(subnet).hosts():
-        ip = str(ip)
-        for port in ports:
-            pkt = IP(dst=ip)/TCP(dport=port, flags="S")
-            reply = sr1(pkt, timeout=1, verbose=0)
-            if reply and reply.haslayer(TCP):
-                if reply[TCP].flags == "SA":
-                    print(f"  [+] {ip}:{port} is OPEN")
-                elif reply[TCP].flags == "RA":
-                    print(f"  [-] {ip}:{port} is CLOSED")
+def tcp_syn_scan(target, ports=[21, 22, 80, 123, 443, 5353, 8080]):
+    print(f"\n[*] TCP SYN scan on {target} ports {ports}")
+    ans, unans = sr(IP(dst=target)/TCP(dport=ports, flags="S"), timeout=2, verbose=0)
+    for sent, received in ans:
+        if received.haslayer(TCP):
+            if received[TCP].flags == "SA":
+                print(f"  [+] {received.src}:{received[TCP].sport} is OPEN")
+            elif received[TCP].flags == "RA":
+                print(f"  [-] {received.src}:{received[TCP].sport} is CLOSED")
+    print(f"  [*] {len(ans)} responses, {len(unans)} filtered/no response")
 
 if __name__ == "__main__":
+    print("=" * 50)
+    print("[*] Network Scanner")
+    print("=" * 50)
+
     # Scan DMZ subnet
     icmp_scan("10.12.0.0/24")
     tcp_syn_scan("10.12.0.0/24")
-    
+
     # Scan workstation subnet
     icmp_scan("10.1.0.0/24")
     tcp_syn_scan("10.1.0.0/24")
+
+    print("\n" + "=" * 50)
+    print("[*] Scan complete!")
+    print("=" * 50)

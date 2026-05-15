@@ -21,6 +21,6 @@ mnexec -a $(pgrep -f "mininet:r2") nft add rule inet filter forward iifname "r2-
 mnexec -a $(pgrep -f "mininet:r2") nft add rule inet filter forward iifname "r2-eth0" ip daddr 10.1.0.0/24 icmp type echo-request drop
 # Start services inside correct network namespaces
 echo "Starting services..."
-mnexec -a $(pgrep -f "mininet:http") bash -c 'kill $(pgrep apache2) 2>/dev/null; apache2ctl -D FOREGROUND &'
+mnexec -a $(pgrep -f "mininet:http") bash -c 'source /etc/apache2/envvars && apache2 -D FOREGROUND &'
  
 echo "Done!"

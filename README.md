@@ -1,5 +1,6 @@
 # LINFO2347 — project2 
-
+ssh mininet@192.168.56.102 
+    
 **INGINOUS GROUP: 121
 Oussema EBN ATTOU 16582510
 Mohamed Mehdi ABDI 09812510**
@@ -88,6 +89,9 @@ sudo bash protections/protect_scan.sh
 # Re-run scan — ICMP is rate-limited and non-public SYNs are blocked
 internet python3 attacks/network_scan.py
 
+# verify rate limiting working
+internet ping -c 20 -i 0.1 10.12.0.10
+
 # Confirm r2 forward rules (VM host)
 sudo bash -c "mnexec -a $(pgrep -f 'mininet:r2') nft list ruleset"
 ```
@@ -139,7 +143,7 @@ sudo bash -c "mnexec -a $(pgrep -f 'mininet:ftp') nft list ruleset"
 ws2 arp -n
 
 # Run the attack from ws3
-ws3 python3 attacks/arp_poison.py
+ws3 python3 attacks/arp_poison.py &
 
 # Check ws2's ARP cache again — gateway IP now maps to ws3's MAC
 ws2 arp -n
@@ -160,7 +164,7 @@ sudo bash protections/protect_arp_poison.sh
 ```bash
 # Flush ws2's ARP cache and re-run the attack
 ws2 ip neigh flush all
-ws3 python3 attacks/arp_poison.py
+ws3 python3 attacks/arp_poison.py &
 
 # Gateway MAC on ws2 should still be the real router MAC
 ws2 arp -n
@@ -174,14 +178,19 @@ ws2 arp -n
 
 **Attack:** reflected/amplified flooding via source-IP spoofing. The attacker spoofs the victim IP and sends small UDP requests to a reflector; the reflector answers with much larger UDP replies to the victim, amplifying the traffic that hits the victim.
 
-**Execute (prep, Mininet CLI — start reflector on ntp):**
+**Execute Terminal 1 (VM host — start reflector on ntp):**
 ```bash
-ntp python3 attacks/udp_reflector.py &
+ sudo mnexec -a $(pgrep -f "mininet:ntp") python3 attacks/udp_reflector.py &
 ```
 
-**Execute (Mininet CLI):**
+**Execute Terminal 2 (VM host Monitor):**
 ```bash
-internet python3 attacks/reflected_ddos.py
+sudo mnexec -a $(pgrep -f "mininet:ntp") tcpdump -i ntp-eth0 udp port 12345 -c 10 -v
+```
+
+**Execute Terminal 3 (Run attack):**
+```bash
+sudo mnexec -a $(pgrep -f "mininet:internet") python3 attacks/reflected_ddos.py
 ```
 
 **Expected output:** The HTTP server (`10.12.0.10`) is flooded with UDP packets sourced from the reflector on port 12345. The `reflected_ddos.py` script prints the number of amplified packets sent.
@@ -216,10 +225,19 @@ ws2 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
 
 **Attack:** distributed application-layer DoS using multiple compromised hosts (bots). A C&C server runs on the internet host and waits for bots to connect. Once enough bots are connected, it commands them to repeatedly connect to the HTTP server (`10.12.0.10:80`) and send HTTP requests, increasing load with traffic from multiple sources.
 
+
+
+
 **Execute (Mininet CLI):**
 
 1. Start the bots on the workstation hosts (bots will keep looking for C&C every 2 seconds):
 ```bash
+Monitor HTTP (VM host)
+sudo mnexec -a $(pgrep -f "mininet:http") tcpdump -i http-eth0 -n -tttt \
+    dst port 80 \
+    >> ddos_incoming.log 2>&1 &
+Start bots
+
 ws2 python3 attacks/bot.py &
 ws3 python3 attacks/bot.py &
 ```
@@ -285,7 +303,7 @@ ws2 ping -c 2 10.2.0.1
 internet curl -s -o /dev/null -w "HTTP %{http_code}\n" http://10.12.0.10/
 
 # Internet cannot reach workstations — should fail/timeout
-internet ping -c 2 10.1.0.10
+internet ping -c 2 10.1.0.2
 ```
 
 > Expected: all DMZ pings and the HTTP curl return successfully; the internet→workstation ping fails — the enterprise security policy is intact and services remain operational.

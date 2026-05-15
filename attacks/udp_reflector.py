@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Simple UDP reflector - simulates an amplification server
+# Simple UDP reflector simulates an amplification server
 # Run this ON the ntp server
-# Usage: python3 udp_reflector.py
+
 
 import socket
 
